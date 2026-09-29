@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -12,53 +13,52 @@ from telegram.ext import (
 )
 
 TOKEN = os.getenv("BOT_TOKEN")
-
 DATA_FILE = "savings.json"
 
-DEFAULT_GOALS = {
-    "trip": {"name": "✈️ Поездка", "target": 0, "saved": 0},
-    "hair": {"name": "💇‍♀️ Волосы", "target": 0, "saved": 0},
-    "apartment": {"name": "🏠 Квартира", "target": 0, "saved": 0},
-    "reserve": {"name": "✨ НЗ", "target": 0, "saved": 0},
-}
+logging.basicConfig(level=logging.INFO)
 
+data = {}
+
+
+# =========================
+# Работа с данными
+# =========================
 
 def load_data():
+    global data
+
     if not os.path.exists(DATA_FILE):
-        return {}
+        data = {}
+        return
 
     try:
-        with open(DATA_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+        with open(DATA_FILE, "r", encoding="utf-8") as file:
+            data = json.load(file)
     except Exception:
-        return {}
+        data = {}
 
 
-def save_data(data):
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-
-
-data = load_data()
+def save_data():
+    with open(DATA_FILE, "w", encoding="utf-8") as file:
+        json.dump(data, file, ensure_ascii=False, indent=2)
 
 
 def get_user(user_id):
     user_id = str(user_id)
 
     if user_id not in data:
-        data[user_id] = {
-            "goals": {
-                key: value.copy()
-                for key, value in DEFAULT_GOALS.items()
-            }
-        }
-        save_data(data)
+        data[user_id] = {"goals": {}}
+        save_data()
+
+    # На случай старой версии
+    if "goals" not in data[user_id]:
+        data[user_id]["goals"] = {}
 
     return data[user_id]
 
 
 def money(value):
-    return f"{value:,.0f}".replace(",", " ") + " ₽"
+    return f"{int(value):,}".replace(",", " ") + " ₽"
 
 
 def progress_bar(saved, target):
@@ -67,72 +67,128 @@ def progress_bar(saved, target):
 
     percent = min(saved / target, 1)
     filled = int(percent * 10)
+
     return "■" * filled + "□" * (10 - filled)
 
 
 def goal_text(goal):
-    saved = goal["saved"]
-    target = goal["target"]
+    saved = goal.get("saved", 0)
+    target = goal.get("target", 0)
+    name = goal.get("name", "Без названия")
 
     if target > 0:
         percent = min(saved / target * 100, 100)
+
         return (
-            f"{goal['name']}\n"
+            f"<b>{name}</b>\n"
             f"{money(saved)} / {money(target)}\n"
             f"{progress_bar(saved, target)} {percent:.0f}%"
         )
 
     return (
-        f"{goal['name']}\n"
+        f"<b>{name}</b>\n"
         f"{money(saved)} / цель не установлена"
     )
 
 
+# =========================
+# Клавиатуры
+# =========================
+
 def main_keyboard():
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("➕ Добавить деньги", callback_data="add")
+            InlineKeyboardButton(
+                "➕ Добавить деньги",
+                callback_data="add"
+            )
         ],
         [
-            InlineKeyboardButton("📊 Статистика", callback_data="stats")
+            InlineKeyboardButton(
+                "📊 Статистика",
+                callback_data="stats"
+            )
         ],
         [
-            InlineKeyboardButton("⚙️ Настроить цели", callback_data="settings")
+            InlineKeyboardButton(
+                "⚙️ Цели",
+                callback_data="goals"
+            )
         ],
         [
-            InlineKeyboardButton("🔄 Перенести деньги", callback_data="transfer")
+            InlineKeyboardButton(
+                "🔄 Перенести деньги",
+                callback_data="transfer"
+            )
         ],
         [
-            InlineKeyboardButton("➖ Снять деньги", callback_data="withdraw")
+            InlineKeyboardButton(
+                "➖ Снять деньги",
+                callback_data="withdraw"
+            )
         ],
     ])
 
 
-def goals_keyboard(prefix):
+def goal_buttons(prefix, goals):
+    buttons = []
+
+    for key, goal in goals.items():
+        buttons.append([
+            InlineKeyboardButton(
+                goal["name"],
+                callback_data=f"{prefix}:{key}"
+            )
+        ])
+
+    buttons.append([
+        InlineKeyboardButton(
+            "◀️ Назад",
+            callback_data="home"
+        )
+    ])
+
+    return InlineKeyboardMarkup(buttons)
+
+
+def settings_keyboard():
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("✈️ Поездка", callback_data=f"{prefix}:trip")
+            InlineKeyboardButton(
+                "➕ Добавить цель",
+                callback_data="new_goal"
+            )
         ],
         [
-            InlineKeyboardButton("💇‍♀️ Волосы", callback_data=f"{prefix}:hair")
+            InlineKeyboardButton(
+                "✏️ Изменить цель",
+                callback_data="edit_goal"
+            )
         ],
         [
-            InlineKeyboardButton("🏠 Квартира", callback_data=f"{prefix}:apartment")
+            InlineKeyboardButton(
+                "🗑 Удалить цель",
+                callback_data="delete_goal"
+            )
         ],
         [
-            InlineKeyboardButton("✨ НЗ", callback_data=f"{prefix}:reserve")
-        ],
-        [
-            InlineKeyboardButton("◀️ Назад", callback_data="home")
+            InlineKeyboardButton(
+                "◀️ Назад",
+                callback_data="home"
+            )
         ],
     ])
 
+
+# =========================
+# Главная
+# =========================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = get_user(update.effective_user.id)
 
     total = sum(
-        goal["saved"]
+        goal.get("saved", 0)
         for goal in user["goals"].values()
     )
 
@@ -149,21 +205,30 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+# =========================
+# Кнопки
+# =========================
+
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
     user = get_user(update.effective_user.id)
+    goals = user["goals"]
     action = query.data
+
+    # -------------------------
+    # Главный экран
+    # -------------------------
 
     if action == "home":
         total = sum(
-            goal["saved"]
-            for goal in user["goals"].values()
+            goal.get("saved", 0)
+            for goal in goals.values()
         )
 
         await query.edit_message_text(
-            f"🌸 <b>Копилка</b>\n\n"
+            "🌸 <b>Копилка</b>\n\n"
             f"💰 Всего накоплено: <b>{money(total)}</b>\n\n"
             "Выбирай, что хочешь сделать:",
             parse_mode="HTML",
@@ -171,259 +236,606 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    # -------------------------
+    # Добавить деньги
+    # -------------------------
+
     if action == "add":
-        context.user_data["mode"] = "add"
+        if not goals:
+            await query.edit_message_text(
+                "У тебя пока нет целей.\n\n"
+                "Сначала создай хотя бы одну цель ✨",
+                reply_markup=InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton(
+                            "➕ Создать цель",
+                            callback_data="new_goal"
+                        )
+                    ],
+                    [
+                        InlineKeyboardButton(
+                            "◀️ Назад",
+                            callback_data="home"
+                        )
+                    ]
+                ])
+            )
+            return
+
+        context.user_data["mode"] = "add_select"
+
         await query.edit_message_text(
             "➕ <b>Добавляем деньги</b>\n\n"
-            "Сначала выбери цель:",
+            "Выбери цель:",
             parse_mode="HTML",
-            reply_markup=goals_keyboard("add")
+            reply_markup=goal_buttons("add", goals)
         )
         return
 
     if action.startswith("add:"):
-        goal_key = action.split(":")[1]
+        goal_key = action.split(":", 1)[1]
+
         context.user_data["goal"] = goal_key
         context.user_data["mode"] = "add_amount"
 
-        goal = user["goals"][goal_key]
+        goal = goals[goal_key]
 
         await query.edit_message_text(
-            f"{goal['name']}\n\n"
+            f"➕ {goal['name']}\n\n"
             "Напиши сумму, которую хочешь отложить:",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("◀️ Назад", callback_data="add")]
+                [
+                    InlineKeyboardButton(
+                        "◀️ Назад",
+                        callback_data="add"
+                    )
+                ]
             ])
         )
         return
 
+    # -------------------------
+    # Статистика
+    # -------------------------
+
     if action == "stats":
-        text = "📊 <b>Твои накопления</b>\n\n"
+        if not goals:
+            text = (
+                "📊 <b>Статистика</b>\n\n"
+                "Пока нет ни одной цели."
+            )
+        else:
+            text = "📊 <b>Твои накопления</b>\n\n"
 
-        for goal in user["goals"].values():
-            text += goal_text(goal) + "\n\n"
+            for goal in goals.values():
+                text += goal_text(goal) + "\n\n"
 
-        total_saved = sum(
-            goal["saved"]
-            for goal in user["goals"].values()
-        )
+            total_saved = sum(
+                goal.get("saved", 0)
+                for goal in goals.values()
+            )
 
-        total_target = sum(
-            goal["target"]
-            for goal in user["goals"].values()
-        )
+            total_target = sum(
+                goal.get("target", 0)
+                for goal in goals.values()
+            )
 
-        text += f"💰 <b>Всего:</b> {money(total_saved)}"
+            text += f"💰 <b>Всего накоплено:</b> {money(total_saved)}\n"
 
-        if total_target > 0:
-            text += f" из {money(total_target)}"
+            if total_target:
+                text += f"🎯 <b>Всего целей:</b> {money(total_target)}"
 
         await query.edit_message_text(
             text,
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("◀️ Назад", callback_data="home")]
+                [
+                    InlineKeyboardButton(
+                        "◀️ Назад",
+                        callback_data="home"
+                    )
+                ]
             ])
         )
         return
 
-    if action == "settings":
+    # -------------------------
+    # Цели
+    # -------------------------
+
+    if action == "goals":
         await query.edit_message_text(
-            "⚙️ <b>Настройка целей</b>\n\n"
-            "Выбери цель, для которой хочешь установить сумму:",
+            "⚙️ <b>Мои цели</b>\n\n"
+            "Здесь ты можешь создавать, менять и удалять цели.",
             parse_mode="HTML",
-            reply_markup=goals_keyboard("set")
+            reply_markup=settings_keyboard()
         )
         return
 
-    if action.startswith("set:"):
-        goal_key = action.split(":")[1]
+    # -------------------------
+    # Новая цель
+    # -------------------------
+
+    if action == "new_goal":
+        context.user_data.clear()
+        context.user_data["mode"] = "new_goal_name"
+
+        await query.edit_message_text(
+            "➕ <b>Новая цель</b>\n\n"
+            "Как её назовём?\n\n"
+            "Например: ✈️ Поездка, 🇵🇹 Португалия, 💻 MacBook"
+        )
+        return
+
+    # -------------------------
+    # Изменить цель
+    # -------------------------
+
+    if action == "edit_goal":
+        if not goals:
+            await query.edit_message_text(
+                "У тебя пока нет целей.",
+                reply_markup=settings_keyboard()
+            )
+            return
+
+        await query.edit_message_text(
+            "✏️ <b>Какую цель изменить?</b>",
+            parse_mode="HTML",
+            reply_markup=goal_buttons("edit", goals)
+        )
+        return
+
+    if action.startswith("edit:"):
+        goal_key = action.split(":", 1)[1]
 
         context.user_data["goal"] = goal_key
-        context.user_data["mode"] = "set_target"
+        context.user_data["mode"] = "edit_name"
 
-        goal = user["goals"][goal_key]
+        goal = goals[goal_key]
 
         await query.edit_message_text(
-            f"{goal['name']}\n\n"
-            f"Сейчас цель: {money(goal['target'])}\n\n"
-            "Напиши новую сумму цели:",
+            f"✏️ Сейчас цель называется:\n"
+            f"<b>{goal['name']}</b>\n\n"
+            "Напиши новое название:",
+            parse_mode="HTML"
+        )
+        return
+
+    # -------------------------
+    # Удалить цель
+    # -------------------------
+
+    if action == "delete_goal":
+        if not goals:
+            await query.edit_message_text(
+                "У тебя пока нет целей.",
+                reply_markup=settings_keyboard()
+            )
+            return
+
+        await query.edit_message_text(
+            "🗑 <b>Какую цель удалить?</b>",
+            parse_mode="HTML",
+            reply_markup=goal_buttons("delete", goals)
+        )
+        return
+
+    if action.startswith("delete:"):
+        goal_key = action.split(":", 1)[1]
+        goal = goals[goal_key]
+
+        context.user_data["delete_goal"] = goal_key
+
+        await query.edit_message_text(
+            f"🗑 Удалить цель <b>{goal['name']}</b>?\n\n"
+            f"В ней сейчас: <b>{money(goal.get('saved', 0))}</b>\n\n"
+            "Если удалить её, деньги тоже исчезнут из копилки.",
+            parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("◀️ Назад", callback_data="settings")]
+                [
+                    InlineKeyboardButton(
+                        "❌ Да, удалить",
+                        callback_data="delete_confirm"
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        "◀️ Отмена",
+                        callback_data="goals"
+                    )
+                ]
             ])
         )
         return
 
+    if action == "delete_confirm":
+        goal_key = context.user_data.get("delete_goal")
+
+        if goal_key in goals:
+            deleted_name = goals[goal_key]["name"]
+            del goals[goal_key]
+            save_data()
+
+            context.user_data.clear()
+
+            await query.edit_message_text(
+                f"🗑 Цель <b>{deleted_name}</b> удалена.",
+                parse_mode="HTML",
+                reply_markup=settings_keyboard()
+            )
+        else:
+            await query.edit_message_text(
+                "Цель уже удалена.",
+                reply_markup=settings_keyboard()
+            )
+        return
+
+    # -------------------------
+    # Снять деньги
+    # -------------------------
+
     if action == "withdraw":
-        context.user_data["mode"] = "withdraw"
+        if not goals:
+            await query.edit_message_text(
+                "У тебя пока нет целей.",
+                reply_markup=InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton(
+                            "◀️ Назад",
+                            callback_data="home"
+                        )
+                    ]
+                ])
+            )
+            return
 
         await query.edit_message_text(
             "➖ <b>Снять деньги</b>\n\n"
-            "Выбери, из какой цели снять:",
+            "Из какой цели снять?",
             parse_mode="HTML",
-            reply_markup=goals_keyboard("withdraw")
+            reply_markup=goal_buttons("withdraw", goals)
         )
         return
 
     if action.startswith("withdraw:"):
-        goal_key = action.split(":")[1]
+        goal_key = action.split(":", 1)[1]
 
         context.user_data["goal"] = goal_key
         context.user_data["mode"] = "withdraw_amount"
 
-        goal = user["goals"][goal_key]
+        goal = goals[goal_key]
 
         await query.edit_message_text(
-            f"{goal['name']}\n\n"
-            f"Доступно: {money(goal['saved'])}\n\n"
-            "Напиши сумму, которую хочешь снять:"
+            f"➖ {goal['name']}\n\n"
+            f"Доступно: <b>{money(goal.get('saved', 0))}</b>\n\n"
+            "Напиши сумму, которую хочешь снять:",
+            parse_mode="HTML"
         )
         return
 
+    # -------------------------
+    # Перенос денег
+    # -------------------------
+
     if action == "transfer":
+        if len(goals) < 2:
+            await query.edit_message_text(
+                "Для переноса нужны хотя бы две цели.",
+                reply_markup=InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton(
+                            "◀️ Назад",
+                            callback_data="home"
+                        )
+                    ]
+                ])
+            )
+            return
+
+        context.user_data.clear()
         context.user_data["mode"] = "transfer_from"
 
         await query.edit_message_text(
             "🔄 <b>Перенос денег</b>\n\n"
-            "Сначала выбери, ОТКУДА переносим деньги:",
+            "Откуда переносим?",
             parse_mode="HTML",
-            reply_markup=goals_keyboard("from")
+            reply_markup=goal_buttons("from", goals)
         )
         return
 
     if action.startswith("from:"):
-        goal_key = action.split(":")[1]
+        goal_key = action.split(":", 1)[1]
 
         context.user_data["from_goal"] = goal_key
         context.user_data["mode"] = "transfer_to"
 
         await query.edit_message_text(
-            "Теперь выбери, <b>КУДА</b> перенести деньги:",
+            "🔄 <b>Куда переносим?</b>",
             parse_mode="HTML",
-            reply_markup=goals_keyboard("to")
+            reply_markup=goal_buttons("to", goals)
         )
         return
 
     if action.startswith("to:"):
-        goal_key = action.split(":")[1]
-
+        goal_key = action.split(":", 1)[1]
         from_goal = context.user_data.get("from_goal")
 
         if goal_key == from_goal:
             await query.edit_message_text(
                 "😅 Нельзя перенести деньги сами в себя.\n\n"
                 "Выбери другую цель:",
-                reply_markup=goals_keyboard("to")
+                reply_markup=goal_buttons("to", goals)
             )
             return
 
         context.user_data["to_goal"] = goal_key
         context.user_data["mode"] = "transfer_amount"
 
-        source = user["goals"][from_goal]
+        source = goals[from_goal]
 
         await query.edit_message_text(
-            f"🔄 Перенос\n\n"
+            f"🔄 <b>Перенос денег</b>\n\n"
             f"Откуда: {source['name']}\n"
-            f"Доступно: {money(source['saved'])}\n\n"
-            "Напиши сумму:"
-        )
-        return
-
-
-async def message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = get_user(update.effective_user.id)
-    mode = context.user_data.get("mode")
-
-    if not mode:
-        await update.message.reply_text(
-            "Выбери действие:",
-            reply_markup=main_keyboard()
-        )
-        return
-
-    try:
-        amount = float(
-            update.message.text.replace(" ", "").replace(",", ".")
-        )
-
-        if amount <= 0:
-            raise ValueError
-
-        amount = int(amount)
-
-    except ValueError:
-        await update.message.reply_text(
-            "Напиши сумму числом, например: <b>30000</b>",
+            f"Доступно: {money(source.get('saved', 0))}\n\n"
+            "Напиши сумму:",
             parse_mode="HTML"
         )
         return
 
-    if mode == "add_amount":
-        goal_key = context.user_data["goal"]
-        goal = user["goals"][goal_key]
 
-        goal["saved"] += amount
-        save_data(data)
+# =========================
+# Текстовые сообщения
+# =========================
 
+async def message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = get_user(update.effective_user.id)
+    goals = user["goals"]
+    mode = context.user_data.get("mode")
+
+    text = update.message.text.strip()
+
+    # -------------------------
+    # Название новой цели
+    # -------------------------
+
+    if mode == "new_goal_name":
+        if not text:
+            await update.message.reply_text(
+                "Название не может быть пустым."
+            )
+            return
+
+        context.user_data["new_goal_name"] = text
+        context.user_data["mode"] = "new_goal_target"
+
+        await update.message.reply_text(
+            f"Название: <b>{text}</b>\n\n"
+            "Теперь напиши, сколько нужно накопить:",
+            parse_mode="HTML"
+        )
+        return
+
+    # -------------------------
+    # Сумма новой цели
+    # -------------------------
+
+    if mode == "new_goal_target":
+        try:
+            target = int(
+                float(
+                    text.replace(" ", "").replace(",", ".")
+                )
+            )
+
+            if target <= 0:
+                raise ValueError
+
+        except ValueError:
+            await update.message.reply_text(
+                "Напиши сумму числом, например: <b>500000</b>",
+                parse_mode="HTML"
+            )
+            return
+
+        name = context.user_data["new_goal_name"]
+
+        # Уникальный ID
+        goal_id = str(
+            max(
+                [int(key) for key in goals.keys() if key.isdigit()],
+                default=0
+            ) + 1
+        )
+
+        goals[goal_id] = {
+            "name": name,
+            "target": target,
+            "saved": 0
+        }
+
+        save_data()
         context.user_data.clear()
 
         await update.message.reply_text(
-            f"✅ Добавил <b>{money(amount)}</b>\n\n"
-            f"{goal_text(goal)}",
+            "🎉 <b>Цель создана!</b>\n\n"
+            + goal_text(goals[goal_id]),
             parse_mode="HTML",
             reply_markup=main_keyboard()
         )
         return
 
-    if mode == "withdraw_amount":
+    # -------------------------
+    # Редактирование названия
+    # -------------------------
+
+    if mode == "edit_name":
         goal_key = context.user_data["goal"]
-        goal = user["goals"][goal_key]
+
+        if goal_key not in goals:
+            context.user_data.clear()
+            await update.message.reply_text(
+                "Эта цель больше не существует."
+            )
+            return
+
+        goals[goal_key]["name"] = text
+
+        context.user_data["mode"] = "edit_target"
+
+        await update.message.reply_text(
+            f"Название изменено на <b>{text}</b>.\n\n"
+            "Теперь напиши новую сумму цели:",
+            parse_mode="HTML"
+        )
+        return
+
+    # -------------------------
+    # Редактирование суммы
+    # -------------------------
+
+    if mode == "edit_target":
+        try:
+            target = int(
+                float(
+                    text.replace(" ", "").replace(",", ".")
+                )
+            )
+
+            if target <= 0:
+                raise ValueError
+
+        except ValueError:
+            await update.message.reply_text(
+                "Напиши сумму числом, например: <b>500000</b>",
+                parse_mode="HTML"
+            )
+            return
+
+        goal_key = context.user_data["goal"]
+
+        goals[goal_key]["target"] = target
+
+        save_data()
+        context.user_data.clear()
+
+        await update.message.reply_text(
+            "✅ <b>Цель обновлена!</b>\n\n"
+            + goal_text(goals[goal_key]),
+            parse_mode="HTML",
+            reply_markup=main_keyboard()
+        )
+        return
+
+    # -------------------------
+    # Добавление денег
+    # -------------------------
+
+    if mode == "add_amount":
+        try:
+            amount = int(
+                float(
+                    text.replace(" ", "").replace(",", ".")
+                )
+            )
+
+            if amount <= 0:
+                raise ValueError
+
+        except ValueError:
+            await update.message.reply_text(
+                "Напиши сумму числом, например: <b>30000</b>",
+                parse_mode="HTML"
+            )
+            return
+
+        goal_key = context.user_data["goal"]
+
+        goals[goal_key]["saved"] += amount
+
+        save_data()
+        context.user_data.clear()
+
+        await update.message.reply_text(
+            f"✅ Добавлено <b>{money(amount)}</b>\n\n"
+            + goal_text(goals[goal_key]),
+            parse_mode="HTML",
+            reply_markup=main_keyboard()
+        )
+        return
+
+    # -------------------------
+    # Снятие
+    # -------------------------
+
+    if mode == "withdraw_amount":
+        try:
+            amount = int(
+                float(
+                    text.replace(" ", "").replace(",", ".")
+                )
+            )
+
+            if amount <= 0:
+                raise ValueError
+
+        except ValueError:
+            await update.message.reply_text(
+                "Напиши сумму числом.",
+                parse_mode="HTML"
+            )
+            return
+
+        goal_key = context.user_data["goal"]
+        goal = goals[goal_key]
 
         if amount > goal["saved"]:
             await update.message.reply_text(
-                f"У этой цели только <b>{money(goal['saved'])}</b>.\n"
-                "Столько снять нельзя 😌",
+                f"У цели только <b>{money(goal['saved'])}</b>.",
                 parse_mode="HTML"
             )
             return
 
         goal["saved"] -= amount
-        save_data(data)
 
+        save_data()
         context.user_data.clear()
 
         await update.message.reply_text(
-            f"➖ Снял <b>{money(amount)}</b>\n\n"
-            f"{goal_text(goal)}",
+            f"➖ Снято <b>{money(amount)}</b>\n\n"
+            + goal_text(goal),
             parse_mode="HTML",
             reply_markup=main_keyboard()
         )
         return
 
-    if mode == "set_target":
-        goal_key = context.user_data["goal"]
-        goal = user["goals"][goal_key]
-
-        goal["target"] = amount
-        save_data(data)
-
-        context.user_data.clear()
-
-        await update.message.reply_text(
-            f"⚙️ Цель обновлена!\n\n"
-            f"{goal_text(goal)}",
-            parse_mode="HTML",
-            reply_markup=main_keyboard()
-        )
-        return
+    # -------------------------
+    # Перенос
+    # -------------------------
 
     if mode == "transfer_amount":
-        from_goal_key = context.user_data["from_goal"]
-        to_goal_key = context.user_data["to_goal"]
+        try:
+            amount = int(
+                float(
+                    text.replace(" ", "").replace(",", ".")
+                )
+            )
 
-        from_goal = user["goals"][from_goal_key]
-        to_goal = user["goals"][to_goal_key]
+            if amount <= 0:
+                raise ValueError
+
+        except ValueError:
+            await update.message.reply_text(
+                "Напиши сумму числом.",
+                parse_mode="HTML"
+            )
+            return
+
+        from_key = context.user_data["from_goal"]
+        to_key = context.user_data["to_goal"]
+
+        from_goal = goals[from_key]
+        to_goal = goals[to_key]
 
         if amount > from_goal["saved"]:
             await update.message.reply_text(
@@ -436,8 +848,7 @@ async def message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         from_goal["saved"] -= amount
         to_goal["saved"] += amount
 
-        save_data(data)
-
+        save_data()
         context.user_data.clear()
 
         await update.message.reply_text(
@@ -449,23 +860,50 @@ async def message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    await update.message.reply_text(
+        "Выбери действие:",
+        reply_markup=main_keyboard()
+    )
 
-async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
-    logging.error("Ошибка:", exc_info=context.error)
 
+# =========================
+# Ошибки
+# =========================
+
+async def error_handler(update, context):
+    logging.error(
+        "Ошибка:",
+        exc_info=context.error
+    )
+
+
+# =========================
+# Запуск
+# =========================
 
 def main():
     if not TOKEN:
         raise RuntimeError(
-            "Не найден BOT_TOKEN. Добавь токен бота в переменные окружения."
+            "Не найден BOT_TOKEN"
         )
+
+    load_data()
 
     application = Application.builder().token(TOKEN).build()
 
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CallbackQueryHandler(button))
     application.add_handler(
-        MessageHandler(filters.TEXT & ~filters.COMMAND, message)
+        CommandHandler("start", start)
+    )
+
+    application.add_handler(
+        CallbackQueryHandler(button)
+    )
+
+    application.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            message
+        )
     )
 
     application.add_error_handler(error_handler)
